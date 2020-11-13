@@ -93,6 +93,11 @@ use super::extract_guard;
 use crate::init;
 use crate::init::Init;
 
+// ____________ GROUP WORK ____________
+use std::process;
+// ____________________________________
+
+
 /// Type for returning functions outcome.
 pub type Result<T> = result::Result<T, LoggerError>;
 
@@ -120,6 +125,9 @@ pub struct Logger {
     show_file_path: AtomicBool,
     show_line_numbers: AtomicBool,
     instance_id: RwLock<String>,
+
+    // OUR STUFF
+    show_thread_id: AtomicBool,
 }
 
 impl Logger {
@@ -132,6 +140,11 @@ impl Logger {
             show_line_numbers: AtomicBool::new(true),
             show_file_path: AtomicBool::new(true),
             instance_id: RwLock::new(String::new()),
+
+
+            // OUR STUFF
+            show_thread_id: AtomicBool::new(true),
+
         }
     }
 
@@ -145,6 +158,11 @@ impl Logger {
 
     fn show_line_numbers(&self) -> bool {
         self.show_line_numbers.load(Ordering::Relaxed)
+    }
+
+    // OUR STUFF
+    fn show_thread_id(&self) -> bool {
+        self.show_thread_id.load(Ordering::Relaxed)
     }
 
     /// Enables or disables including the level in the log message's tag portion.
@@ -247,6 +265,14 @@ impl Logger {
     /// Creates the first portion (to the left of the separator)
     /// of the log statement based on the logger settings.
     fn create_prefix(&self, record: &Record) -> String {
+
+
+        println!("TEST___~~~");
+        println!("PROCESS PID: {}", process::id());
+        if self.show_thread_id() {
+            println!("SHOWING THREAD ID");
+        }
+
         let mut prefix: Vec<String> = vec![];
 
         let instance_id = extract_guard(self.instance_id.read());
