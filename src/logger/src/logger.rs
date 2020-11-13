@@ -95,6 +95,7 @@ use crate::init::Init;
 
 // ____________ GROUP WORK ____________
 use std::process;
+use std::thread;
 // ____________________________________
 
 
@@ -270,7 +271,17 @@ impl Logger {
         println!("TEST___~~~");
         println!("PROCESS PID: {}", process::id());
         if self.show_thread_id() {
-            println!("SHOWING THREAD ID");
+
+            let handle = thread::current();
+            let name = handle.name();
+            let mut thread_name = String::new();
+            match name {
+                Some(x) => thread_name = x.to_string(),
+                None    => thread_name = "-".to_string()
+            }
+            
+            println!("Thread name: {}", thread_name);
+
         }
 
         let mut prefix: Vec<String> = vec![];
