@@ -94,7 +94,6 @@ use crate::init;
 use crate::init::Init;
 
 // ____________ GROUP WORK ____________
-use std::process;
 use std::thread;
 // ____________________________________
 
@@ -278,20 +277,13 @@ impl Logger {
 
         let mut prefix: Vec<String> = vec![];
 
-        // println!("TEST___~~~");
-        // println!("PROCESS PID: {}", process::id());
         if self.show_thread_name() {
-
             let handle = thread::current();
-            //let name = handle.name();
-            let mut thread_name = String::new();
+            let thread_name;
             match handle.name() {
                 Some(x) => thread_name = x.to_string(),
                 None    => thread_name = "-".to_string()
             }
-            
-            println!("Thread name: {}", thread_name);
-            
             prefix.push(thread_name);
         };
 
@@ -706,6 +698,71 @@ mod tests {
         logger.mock_log(Level::Info, "msg");
         validate_log(&mut Box::new(&mut reader), "[logger::tests::test_create_prefix:TEST-INSTANCE-ID] msg\n");
 
+    }
+    
+    #[test]
+    fn test_thread_name_custom(){
+
+        // Name this thread "custom-thread"
+        let custom_thread_1 = thread::Builder::new().name("custom-thread".to_string()).spawn(move || {
+
+            // test to check the thread name
+            let logger = Logger::mock_new();
+            let mut reader = logger.mock_init();
+            
+            // Test with a mock instance id.
+            logger.set_instance_id(TEST_INSTANCE_ID.to_string());
+
+            logger
+                .set_show_thread_name(true)
+                .set_include_level(false)
+                .set_include_origin(false, false);
+            logger.mock_log(Level::Info, "thread-msg");
+            
+            // validate the logged message. This child thread will panic if the assert fails.
+            validate_log(&mut Box::new(&mut reader), "[custom-thread:TEST-INSTANCE-ID] thread-msg\n");
+        }).unwrap();
+
+        
+        let r = custom_thread_1.join();
+        match r {
+            Ok(_r) => {}, 
+            Err(_e) => {
+                panic!("Thread names didn't match!");
+            }
+        }
+
+
+        // // Name this thread "custom-thread-wrong", then validate against an intentionally mismatched thread name. 
+        // let custom_thread_2 = thread::Builder::new().name("custom-thread-wrong".to_string()).spawn(move || {
+        //     io::set_panic(box io::sink());
+        
+        //     // test to check the thread name
+        //     let logger = Logger::mock_new();
+        //     let mut reader = logger.mock_init();
+            
+        //     // Test with a mock instance id.
+        //     logger.set_instance_id(TEST_INSTANCE_ID.to_string());
+
+        //     logger
+        //         .set_show_thread_name(true)
+        //         .set_include_level(false)
+        //         .set_include_origin(false, false);
+        //     logger.mock_log(Level::Info, "thread-msg");
+            
+        //     // validate the logged message. This child thread will panic if the assert fails.
+        //     validate_log(&mut Box::new(&mut reader), "[custom-thread-correct:TEST-INSTANCE-ID] thread-msg\n");
+        // }).unwrap();       
+        
+        // // swap the error cases.
+        // let r2 = custom_thread_2.join();
+        // match r2 {
+        //     Ok(r2) => panic!("Thread names match!"),
+        //     _ => {
+                
+        //     }
+        // }
+        
     }
 
     #[test]
