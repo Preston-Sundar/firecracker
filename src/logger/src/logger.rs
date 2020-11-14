@@ -128,7 +128,7 @@ pub struct Logger {
     instance_id: RwLock<String>,
 
     // OUR STUFF
-    show_thread_id: AtomicBool,
+    show_thread_name: AtomicBool,
 }
 
 impl Logger {
@@ -144,7 +144,7 @@ impl Logger {
 
 
             // OUR STUFF
-            show_thread_id: AtomicBool::new(true),
+            show_thread_name: AtomicBool::new(false),
 
         }
     }
@@ -162,8 +162,8 @@ impl Logger {
     }
 
     // OUR STUFF
-    fn show_thread_id(&self) -> bool {
-        self.show_thread_id.load(Ordering::Relaxed)
+    fn show_thread_name(&self) -> bool {
+        self.show_thread_name.load(Ordering::Relaxed)
     }
 
     /// Enables or disables including the level in the log message's tag portion.
@@ -263,28 +263,38 @@ impl Logger {
         self
     }
 
+
+    /// OUR STUFF
+    /// choose whether to log the thread-names
+    pub fn set_show_thread_name(&self, option: bool) -> &Self {
+        self.show_thread_name.store(option, Ordering::Relaxed);
+        self
+    }
+
+
     /// Creates the first portion (to the left of the separator)
     /// of the log statement based on the logger settings.
     fn create_prefix(&self, record: &Record) -> String {
 
+        let mut prefix: Vec<String> = vec![];
 
-        println!("TEST___~~~");
-        println!("PROCESS PID: {}", process::id());
-        if self.show_thread_id() {
+        // println!("TEST___~~~");
+        // println!("PROCESS PID: {}", process::id());
+        if self.show_thread_name() {
 
             let handle = thread::current();
-            let name = handle.name();
+            //let name = handle.name();
             let mut thread_name = String::new();
-            match name {
+            match handle.name() {
                 Some(x) => thread_name = x.to_string(),
                 None    => thread_name = "-".to_string()
             }
             
             println!("Thread name: {}", thread_name);
+            
+            prefix.push(thread_name);
+        };
 
-        }
-
-        let mut prefix: Vec<String> = vec![];
 
         let instance_id = extract_guard(self.instance_id.read());
         if !instance_id.is_empty() {
@@ -684,6 +694,18 @@ mod tests {
             &mut Box::new(&mut reader),
             "[TEST-INSTANCE-ID:WARN:logger.rs:0] msg\n",
         );
+
+
+        // OUR STUFF
+        // set the show_thread_names option to true, ensure that the thread 
+        // name appears in the log message.
+        logger
+            .set_show_thread_name(true)
+            .set_include_level(false)
+            .set_include_origin(false, false);
+        logger.mock_log(Level::Info, "msg");
+        validate_log(&mut Box::new(&mut reader), "[logger::tests::test_create_prefix:TEST-INSTANCE-ID] msg\n");
+
     }
 
     #[test]
