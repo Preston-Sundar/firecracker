@@ -61,7 +61,6 @@ def check_log_message_format(log_str, instance_id, level, show_level,
     # OUR STUFF
     if show_thread_name:
         pattern += ":(.*)"
-    
     if show_level:
         pattern += ":(" + "|".join(LOG_LEVELS) + ")"
     if show_origin:
@@ -69,13 +68,13 @@ def check_log_message_format(log_str, instance_id, level, show_level,
     pattern += "\\]"
 
     mo = re.match(pattern, tag)
-
     print(pattern, tag)
-    
     assert mo is not None
 
     if show_level:
         tag_level = mo.group(2)
+        if (show_thread_name):
+            tag_level = mo.group(3)
         tag_level_no = LOG_LEVELS.index(tag_level)
         configured_level_no = LOG_LEVELS.index(to_formal_log_level(level))
         assert tag_level_no <= configured_level_no
@@ -99,14 +98,19 @@ def test_no_level_logs(test_microvm_with_ssh):
     )
 
 
-def test_thread_name_logs(test_microvm_with_ssh):
+def test_show_all_with_thread_name(test_microvm_with_ssh):
+    _test_log_config(
+        microvm=test_microvm_with_ssh,
+        show_thread_name=True
+    )
+
+def test_show_only_thread_name(test_microvm_with_ssh):
     _test_log_config(
         microvm=test_microvm_with_ssh,
         show_level=False,
         show_origin=False,
         show_thread_name=True
     )
-
 
 
 def test_no_nada_logs(test_microvm_with_ssh):
