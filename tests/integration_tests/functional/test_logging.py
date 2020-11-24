@@ -39,7 +39,7 @@ def to_formal_log_level(log_level):
 
 
 def check_log_message_format(log_str, instance_id, level, show_level,
-                             show_origin):
+                             show_origin, show_thread_name):
     """Ensure correctness of the logged message.
 
     Parse the string representing the logs and look for the parts
@@ -55,6 +55,11 @@ def check_log_message_format(log_str, instance_id, level, show_level,
     strptime(timestamp, "%Y-%m-%dT%H:%M:%S")
 
     pattern = "\\[(" + instance_id + ")"
+
+    # OUR STUFF
+    if show_thread_name:
+        pattern += ":(.*)"
+    
     if show_level:
         pattern += ":(" + "|".join(LOG_LEVELS) + ")"
     if show_origin:
@@ -87,6 +92,15 @@ def test_no_level_logs(test_microvm_with_ssh):
         show_level=False,
         show_origin=True
     )
+
+
+def test_thread_name_logs(test_microvm_with_ssh):
+    _test_log_config(
+        microvm=test_microvm_with_ssh,
+        show_level=False,
+        show_origin=False,
+    )
+
 
 
 def test_no_nada_logs(test_microvm_with_ssh):
@@ -230,7 +244,8 @@ def _test_log_config(
         microvm,
         log_level='Info',
         show_level=True,
-        show_origin=True
+        show_origin=True,
+        show_thread_name=False
 ):
     """Exercises different scenarios for testing the logging config."""
     microvm.spawn(create_logger=False)
@@ -243,7 +258,8 @@ def _test_log_config(
             log_path=microvm.create_jailed_resource(log_fifo.path),
             level=log_level,
             show_level=show_level,
-            show_log_origin=show_origin
+            show_log_origin=show_origin,
+            #show_thread_name=show_thread_name
            )
     else:
         response = microvm.logger.put(
@@ -251,6 +267,7 @@ def _test_log_config(
             level=log_level,
             show_level=show_level,
             show_log_origin=show_origin,
+            #show_thread_name=show_thread_name
            )
 
     assert microvm.api_session.is_status_no_content(response.status_code)
@@ -270,5 +287,6 @@ def _test_log_config(
             microvm.id,
             log_level,
             show_level,
-            show_origin
+            show_origin,
+            show_thread_name
         )

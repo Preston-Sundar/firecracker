@@ -90,6 +90,11 @@ pub struct LoggerConfig {
     /// When enabled, the logger will append the origin of the log entry.
     #[serde(default)]
     pub show_log_origin: bool,
+
+    /// When enabled, the logger will append the thread name to the log entry.
+    #[serde(default)]
+    pub show_thread_name: bool,
+
 }
 
 impl LoggerConfig {
@@ -99,12 +104,14 @@ impl LoggerConfig {
         level: LoggerLevel,
         show_level: bool,
         show_log_origin: bool,
+        show_thread_name: bool,
     ) -> LoggerConfig {
         LoggerConfig {
             log_path,
             level,
             show_level,
             show_log_origin,
+            show_thread_name,
         }
     }
 }
@@ -133,7 +140,8 @@ pub fn init_logger(
     LOGGER
         .set_max_level(logger_cfg.level.into())
         .set_include_origin(logger_cfg.show_log_origin, logger_cfg.show_log_origin)
-        .set_include_level(logger_cfg.show_level);
+        .set_include_level(logger_cfg.show_level)
+        .set_show_thread_name(logger_cfg.show_thread_name);
 
     let writer = FcLineWriter::new(
         open_file_nonblock(&logger_cfg.log_path)

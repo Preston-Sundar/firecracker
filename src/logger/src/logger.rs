@@ -277,6 +277,11 @@ impl Logger {
 
         let mut prefix: Vec<String> = vec![];
 
+        let instance_id = extract_guard(self.instance_id.read());
+        if !instance_id.is_empty() {
+            prefix.push(instance_id.to_string());
+        }
+
         if self.show_thread_name() {
             let handle = thread::current();
             let thread_name;
@@ -286,12 +291,6 @@ impl Logger {
             }
             prefix.push(thread_name);
         };
-
-
-        let instance_id = extract_guard(self.instance_id.read());
-        if !instance_id.is_empty() {
-            prefix.push(instance_id.to_string());
-        }
 
         if self.show_level() {
             prefix.push(record.level().to_string());
@@ -696,7 +695,7 @@ mod tests {
             .set_include_level(false)
             .set_include_origin(false, false);
         logger.mock_log(Level::Info, "msg");
-        validate_log(&mut Box::new(&mut reader), "[logger::tests::test_create_prefix:TEST-INSTANCE-ID] msg\n");
+        validate_log(&mut Box::new(&mut reader), "[TEST-INSTANCE-ID:logger::tests::test_create_prefix] msg\n");
 
     }
     
@@ -720,7 +719,7 @@ mod tests {
             logger.mock_log(Level::Info, "thread-msg");
             
             // validate the logged message. This child thread will panic if the assert fails.
-            validate_log(&mut Box::new(&mut reader), "[custom-thread:TEST-INSTANCE-ID] thread-msg\n");
+            validate_log(&mut Box::new(&mut reader), "[TEST-INSTANCE-ID:custom-thread] thread-msg\n");
         }).unwrap();
 
         
