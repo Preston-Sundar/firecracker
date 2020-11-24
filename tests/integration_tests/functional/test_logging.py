@@ -56,6 +56,8 @@ def check_log_message_format(log_str, instance_id, level, show_level,
 
     pattern = "\\[(" + instance_id + ")"
 
+
+
     # OUR STUFF
     if show_thread_name:
         pattern += ":(.*)"
@@ -67,6 +69,9 @@ def check_log_message_format(log_str, instance_id, level, show_level,
     pattern += "\\]"
 
     mo = re.match(pattern, tag)
+
+    print(pattern, tag)
+    
     assert mo is not None
 
     if show_level:
@@ -99,6 +104,7 @@ def test_thread_name_logs(test_microvm_with_ssh):
         microvm=test_microvm_with_ssh,
         show_level=False,
         show_origin=False,
+        show_thread_name=True
     )
 
 
@@ -259,7 +265,7 @@ def _test_log_config(
             level=log_level,
             show_level=show_level,
             show_log_origin=show_origin,
-            #show_thread_name=show_thread_name
+            show_thread_name=show_thread_name
            )
     else:
         response = microvm.logger.put(
@@ -267,7 +273,7 @@ def _test_log_config(
             level=log_level,
             show_level=show_level,
             show_log_origin=show_origin,
-            #show_thread_name=show_thread_name
+            show_thread_name=show_thread_name
            )
 
     assert microvm.api_session.is_status_no_content(response.status_code)
