@@ -83,6 +83,7 @@ use std::io::{sink, stderr, stdout, Write};
 use std::result;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, RwLock};
+use std::thread;
 
 use crate::metrics::{IncMetric, METRICS};
 use lazy_static::lazy_static;
@@ -92,11 +93,6 @@ use utils::time::LocalTime;
 use super::extract_guard;
 use crate::init;
 use crate::init::Init;
-
-// ____________ GROUP WORK ____________
-use std::thread;
-// ____________________________________
-
 
 /// Type for returning functions outcome.
 pub type Result<T> = result::Result<T, LoggerError>;
@@ -140,11 +136,7 @@ impl Logger {
             show_line_numbers: AtomicBool::new(true),
             show_file_path: AtomicBool::new(true),
             instance_id: RwLock::new(String::new()),
-
-
-            // OUR STUFF
             show_thread_name: AtomicBool::new(false),
-
         }
     }
 
@@ -262,21 +254,16 @@ impl Logger {
         self
     }
 
-
-    /// OUR STUFF
-    /// choose whether to log the thread-names
+    /// choose whether to log the thread-names.
     pub fn set_show_thread_name(&self, option: bool) -> &Self {
         self.show_thread_name.store(option, Ordering::Relaxed);
         self
     }
 
-
     /// Creates the first portion (to the left of the separator)
     /// of the log statement based on the logger settings.
     fn create_prefix(&self, record: &Record) -> String {
-
         let mut prefix: Vec<String> = vec![];
-
         let instance_id = extract_guard(self.instance_id.read());
         if !instance_id.is_empty() {
             prefix.push(instance_id.to_string());
@@ -287,7 +274,7 @@ impl Logger {
             let thread_name;
             match handle.name() {
                 Some(x) => thread_name = x.to_string(),
-                None    => thread_name = "-".to_string()
+                None => thread_name = "-".to_string(),
             }
             prefix.push(thread_name);
         };
@@ -685,83 +672,32 @@ mod tests {
             &mut Box::new(&mut reader),
             "[TEST-INSTANCE-ID:WARN:logger.rs:0] msg\n",
         );
-
-
-        // OUR STUFF
-        // set the show_thread_names option to true, ensure that the thread 
-        // name appears in the log message.
-        logger
-            .set_show_thread_name(true)
-            .set_include_level(false)
-            .set_include_origin(false, false);
-        logger.mock_log(Level::Info, "msg");
-        validate_log(&mut Box::new(&mut reader), "[TEST-INSTANCE-ID:logger::tests::test_create_prefix] msg\n");
-
     }
-    
+
     #[test]
-    fn test_thread_name_custom(){
-
+    fn test_thread_name_custom() {
         // Name this thread "custom-thread"
-        let custom_thread_1 = thread::Builder::new().name("custom-thread".to_string()).spawn(move || {
-
-            // test to check the thread name
-            let logger = Logger::mock_new();
-            let mut reader = logger.mock_init();
-            
-            // Test with a mock instance id.
-            logger.set_instance_id(TEST_INSTANCE_ID.to_string());
-
-            logger
-                .set_show_thread_name(true)
-                .set_include_level(false)
-                .set_include_origin(false, false);
-            logger.mock_log(Level::Info, "thread-msg");
-            
-            // validate the logged message. This child thread will panic if the assert fails.
-            validate_log(&mut Box::new(&mut reader), "[TEST-INSTANCE-ID:custom-thread] thread-msg\n");
-        }).unwrap();
-
-        
+        let custom_thread_1 = thread::Builder::new()
+            .name("custom-thread".to_string())
+            .spawn(move || {
+                // test to check the thread name
+                let logger = Logger::mock_new();
+                let mut reader = logger.mock_init();
+                // Test with a mock instance id.
+                logger.set_instance_id(TEST_INSTANCE_ID.to_string());
+                logger
+                    .set_show_thread_name(true)
+                    .set_include_level(false)
+                    .set_include_origin(false, false);
+                logger.mock_log(Level::Info, "thread-msg");
+                validate_log(
+                    &mut Box::new(&mut reader),
+                    "[TEST-INSTANCE-ID:custom-thread] thread-msg\n",
+                );
+            })
+            .unwrap();
         let r = custom_thread_1.join();
-        match r {
-            Ok(_r) => {}, 
-            Err(_e) => {
-                panic!("Thread names didn't match!");
-            }
-        }
-
-
-        // // Name this thread "custom-thread-wrong", then validate against an intentionally mismatched thread name. 
-        // let custom_thread_2 = thread::Builder::new().name("custom-thread-wrong".to_string()).spawn(move || {
-        //     io::set_panic(box io::sink());
-        
-        //     // test to check the thread name
-        //     let logger = Logger::mock_new();
-        //     let mut reader = logger.mock_init();
-            
-        //     // Test with a mock instance id.
-        //     logger.set_instance_id(TEST_INSTANCE_ID.to_string());
-
-        //     logger
-        //         .set_show_thread_name(true)
-        //         .set_include_level(false)
-        //         .set_include_origin(false, false);
-        //     logger.mock_log(Level::Info, "thread-msg");
-            
-        //     // validate the logged message. This child thread will panic if the assert fails.
-        //     validate_log(&mut Box::new(&mut reader), "[custom-thread-correct:TEST-INSTANCE-ID] thread-msg\n");
-        // }).unwrap();       
-        
-        // // swap the error cases.
-        // let r2 = custom_thread_2.join();
-        // match r2 {
-        //     Ok(r2) => panic!("Thread names match!"),
-        //     _ => {
-                
-        //     }
-        // }
-        
+        assert_eq!(r.is_ok(), true);
     }
 
     #[test]

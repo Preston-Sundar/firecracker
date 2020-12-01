@@ -90,11 +90,9 @@ pub struct LoggerConfig {
     /// When enabled, the logger will append the origin of the log entry.
     #[serde(default)]
     pub show_log_origin: bool,
-
     /// When enabled, the logger will append the thread name to the log entry.
     #[serde(default)]
     pub show_thread_name: bool,
-
 }
 
 impl LoggerConfig {
@@ -184,6 +182,7 @@ mod tests {
             level: LoggerLevel::Debug,
             show_level: false,
             show_log_origin: false,
+            show_thread_name: false,
         };
         assert!(init_logger(desc, &default_instance_info).is_err());
 
@@ -194,6 +193,7 @@ mod tests {
             level: LoggerLevel::Info,
             show_level: true,
             show_log_origin: true,
+            show_thread_name: true,
         };
 
         assert!(init_logger(desc.clone(), &default_instance_info).is_ok());
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn test_new_logger_config() {
         let logger_config =
-            LoggerConfig::new(PathBuf::from("log"), LoggerLevel::Debug, false, true);
+            LoggerConfig::new(PathBuf::from("log"), LoggerLevel::Debug, false, true, false);
         assert_eq!(logger_config.log_path, PathBuf::from("log"));
         assert_eq!(logger_config.level, LoggerLevel::Debug);
         assert_eq!(logger_config.show_level, false);

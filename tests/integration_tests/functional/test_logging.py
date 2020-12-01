@@ -56,9 +56,6 @@ def check_log_message_format(log_str, instance_id, level, show_level,
 
     pattern = "\\[(" + instance_id + ")"
 
-
-
-    # OUR STUFF
     if show_thread_name:
         pattern += ":(.*)"
     if show_level:
@@ -73,7 +70,7 @@ def check_log_message_format(log_str, instance_id, level, show_level,
 
     if show_level:
         tag_level = mo.group(2)
-        if (show_thread_name):
+        if show_thread_name:
             tag_level = mo.group(3)
         tag_level_no = LOG_LEVELS.index(tag_level)
         configured_level_no = LOG_LEVELS.index(to_formal_log_level(level))
@@ -99,12 +96,15 @@ def test_no_level_logs(test_microvm_with_ssh):
 
 
 def test_show_all_with_thread_name(test_microvm_with_ssh):
+    """Check that logs contain the current thread's name."""
     _test_log_config(
         microvm=test_microvm_with_ssh,
         show_thread_name=True
     )
 
+
 def test_show_only_thread_name(test_microvm_with_ssh):
+    """Check if logs contain thread name when origin and level are disabled."""
     _test_log_config(
         microvm=test_microvm_with_ssh,
         show_level=False,

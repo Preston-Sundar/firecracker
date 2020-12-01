@@ -293,7 +293,6 @@ class Logger():
         if show_log_origin is not None:
             datax['show_log_origin'] = show_log_origin
 
-            
         if show_thread_name is not None:
             datax['show_thread_name'] = show_thread_name
 
