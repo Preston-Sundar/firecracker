@@ -3,17 +3,18 @@
 
 //! Enables pre-boot setup, instantiation and booting of a Firecracker VMM.
 
-#[cfg(target_arch = "x86_64")]
 use std::convert::TryFrom;
 use std::fmt::{Display, Formatter};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 
+#[cfg(target_arch = "aarch64")]
+use crate::construct_gicr_typer;
+#[cfg(target_arch = "x86_64")]
+use crate::device_manager::legacy::PortIODeviceManager;
 use crate::device_manager::mmio::MMIODeviceManager;
-#[cfg(target_arch = "x86_64")]
-use crate::device_manager::{legacy::PortIODeviceManager, persist::MMIODevManagerConstructorArgs};
-#[cfg(target_arch = "x86_64")]
+use crate::device_manager::persist::MMIODevManagerConstructorArgs;
 use crate::persist::{MicrovmState, MicrovmStateError};
 use crate::vmm_config::boot_source::BootConfig;
 use crate::vstate::{
@@ -30,7 +31,6 @@ use kernel::cmdline::Cmdline as KernelCmdline;
 use logger::warn;
 use polly::event_manager::{Error as EventManagerError, EventManager, Subscriber};
 use seccomp::{BpfProgramRef, SeccompFilter};
-#[cfg(target_arch = "x86_64")]
 use snapshot::Persist;
 use utils::eventfd::EventFd;
 use utils::terminal::Terminal;
@@ -74,7 +74,6 @@ pub enum StartMicrovmError {
     RegisterEvent(EventManagerError),
     /// Cannot initialize a MMIO Device or add a device to the MMIO Bus or cmdline.
     RegisterMmioDevice(device_manager::mmio::Error),
-    #[cfg(target_arch = "x86_64")]
     /// Cannot restore microvm state.
     RestoreMicrovmState(MicrovmStateError),
 }
@@ -153,14 +152,13 @@ impl Display for StartMicrovmError {
                     err_msg
                 )
             }
-            #[cfg(target_arch = "x86_64")]
             RestoreMicrovmState(err) => write!(f, "Cannot restore microvm state. Error: {}", err),
         }
     }
 }
 
 // Wrapper over io::Stdin that implements `Serial::ReadableFd` and `vmm::VmmEventsObserver`.
-struct SerialStdin(io::Stdin);
+pub(crate) struct SerialStdin(io::Stdin);
 impl SerialStdin {
     /// Returns a `SerialStdin` wrapper over `io::stdin`.
     pub fn get() -> Self {
@@ -380,7 +378,6 @@ pub fn build_microvm_for_boot(
 ///
 /// An `Arc` reference of the built `Vmm` is also plugged in the `EventManager`, while another
 /// is returned.
-#[cfg(target_arch = "x86_64")]
 pub fn build_microvm_from_snapshot(
     event_manager: &mut EventManager,
     microvm_state: MicrovmState,
@@ -401,7 +398,18 @@ pub fn build_microvm_from_snapshot(
         vcpu_count,
     )?;
 
+    #[cfg(target_arch = "aarch64")]
+    {
+        let mpidrs = construct_gicr_typer(&microvm_state.vcpu_states);
+        // Restore kvm vm state.
+        vmm.vm
+            .restore_state(&mpidrs, &microvm_state.vm_state)
+            .map_err(MicrovmStateError::RestoreVmState)
+            .map_err(RestoreMicrovmState)?;
+    }
+
     // Restore kvm vm state.
+    #[cfg(target_arch = "x86_64")]
     vmm.vm
         .restore_state(&microvm_state.vm_state)
         .map_err(MicrovmStateError::RestoreVmState)
@@ -593,6 +601,14 @@ pub fn setup_serial_device(
     Ok(serial)
 }
 
+#[cfg(target_arch = "aarch64")]
+/// Sets up the RTC device.
+pub fn setup_rtc_device() -> super::Result<Arc<Mutex<devices::legacy::RTC>>> {
+    let rtc_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(Error::EventFd)?;
+    let rtc = Arc::new(Mutex::new(devices::legacy::RTC::new(rtc_evt)));
+    Ok(rtc)
+}
+
 #[cfg(target_arch = "x86_64")]
 fn create_pio_dev_manager_with_legacy_devices(
     vm: &Vm,
@@ -621,15 +637,16 @@ fn attach_legacy_devices_aarch64(
             Box::new(io::stdout()),
         )?;
         vmm.mmio_device_manager
-            .register_mmio_serial(vmm.vm.fd(), serial)
+            .register_mmio_serial(vmm.vm.fd(), serial, None)
             .map_err(Error::RegisterMMIODevice)?;
         vmm.mmio_device_manager
             .add_mmio_serial_to_cmdline(cmdline)
             .map_err(Error::RegisterMMIODevice)?;
     }
 
+    let rtc = setup_rtc_device()?;
     vmm.mmio_device_manager
-        .register_new_mmio_rtc(vmm.vm.fd())
+        .register_mmio_rtc(vmm.vm.fd(), rtc, None)
         .map_err(Error::RegisterMMIODevice)
 }
 
@@ -639,6 +656,8 @@ fn create_vcpus(vm: &Vm, vcpu_count: u8, exit_evt: &EventFd) -> super::Result<Ve
         let exit_evt = exit_evt.try_clone().map_err(Error::EventFd)?;
 
         let vcpu = Vcpu::new(cpu_idx, vm, exit_evt).map_err(Error::VcpuCreate)?;
+        #[cfg(target_arch = "aarch64")]
+        vcpu.kvm_vcpu.init(vm.fd()).map_err(Error::VcpuInit)?;
 
         vcpus.push(vcpu);
     }
@@ -691,7 +710,7 @@ pub fn configure_system_for_boot(
     {
         for vcpu in vcpus.iter_mut() {
             vcpu.kvm_vcpu
-                .configure(vmm.vm.fd(), vmm.guest_memory(), entry_addr)
+                .configure(vmm.guest_memory(), entry_addr)
                 .map_err(Error::VcpuConfigure)
                 .map_err(Internal)?;
         }
@@ -883,12 +902,22 @@ pub mod tests {
             .map_err(StartMicrovmError::Internal)
             .unwrap();
 
-        let vm = setup_kvm_vm(&guest_memory, false).unwrap();
+        let mut vm = setup_kvm_vm(&guest_memory, false).unwrap();
         let mmio_device_manager = default_mmio_device_manager();
         #[cfg(target_arch = "x86_64")]
         let pio_device_manager = default_portio_device_manager();
 
-        let mut vmm = Vmm {
+        #[cfg(target_arch = "x86_64")]
+        setup_interrupt_controller(&mut vm).unwrap();
+
+        #[cfg(target_arch = "aarch64")]
+        {
+            let exit_evt = EventFd::new(libc::EFD_NONBLOCK).unwrap();
+            let _vcpu = Vcpu::new(1, &vm, exit_evt).unwrap();
+            setup_interrupt_controller(&mut vm, 1).unwrap();
+        }
+
+        Vmm {
             events_observer: Some(Box::new(SerialStdin::get())),
             guest_memory,
             vcpus_handles: Vec::new(),
@@ -897,15 +926,7 @@ pub mod tests {
             mmio_device_manager,
             #[cfg(target_arch = "x86_64")]
             pio_device_manager,
-        };
-
-        #[cfg(target_arch = "x86_64")]
-        setup_interrupt_controller(&mut vmm.vm).unwrap();
-
-        #[cfg(target_arch = "aarch64")]
-        setup_interrupt_controller(&mut vmm.vm, 1).unwrap();
-
-        vmm
+        }
     }
 
     pub(crate) fn insert_block_devices(

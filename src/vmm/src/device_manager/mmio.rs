@@ -21,8 +21,6 @@ use devices::BusDevice;
 use kernel::cmdline as kernel_cmdline;
 use kvm_ioctls::{IoEventAddress, VmFd};
 use logger::info;
-#[cfg(target_arch = "aarch64")]
-use utils::eventfd::EventFd;
 use versionize::{VersionMap, Versionize, VersionizeResult};
 use versionize_derive::Versionize;
 
@@ -92,7 +90,6 @@ pub struct MMIODeviceInfo {
 }
 
 struct IrqManager {
-    #[cfg(target_arch = "x86_64")]
     first: u32,
     last: u32,
     next_avail: u32,
@@ -101,7 +98,6 @@ struct IrqManager {
 impl IrqManager {
     pub fn new(first: u32, last: u32) -> Self {
         Self {
-            #[cfg(target_arch = "x86_64")]
             first,
             last,
             next_avail: first,
@@ -120,7 +116,6 @@ impl IrqManager {
         Ok(irqs)
     }
 
-    #[cfg(target_arch = "x86_64")]
     pub fn check(&self, irqs: &[u32]) -> Result<()> {
         for irq in irqs {
             // Check for out of range.
@@ -135,8 +130,6 @@ impl IrqManager {
 /// Manages the complexities of registering a MMIO device.
 pub struct MMIODeviceManager {
     pub(crate) bus: devices::Bus,
-    // Right now only used on x86_64, but aarch64 will also use these shortly.
-    #[cfg(target_arch = "x86_64")]
     mmio_base: u64,
     next_avail_mmio: u64,
     irqs: IrqManager,
@@ -147,7 +140,6 @@ impl MMIODeviceManager {
     /// Create a new DeviceManager handling mmio devices (virtio net, block).
     pub fn new(mmio_base: u64, irq_interval: (u32, u32)) -> MMIODeviceManager {
         MMIODeviceManager {
-            #[cfg(target_arch = "x86_64")]
             mmio_base,
             next_avail_mmio: mmio_base,
             irqs: IrqManager::new(irq_interval.0, irq_interval.1),
@@ -168,7 +160,6 @@ impl MMIODeviceManager {
         Ok(slot)
     }
 
-    #[cfg(target_arch = "x86_64")]
     /// Does a slot sanity check against expected values.
     pub fn slot_sanity_check(&self, slot: &MMIODeviceInfo) -> Result<()> {
         if slot.addr < self.mmio_base || slot.len != MMIO_LEN {
@@ -257,13 +248,16 @@ impl MMIODeviceManager {
     }
 
     #[cfg(target_arch = "aarch64")]
-    /// Register an early console at some MMIO address.
+    /// Register an early console at the specified MMIO address if given as parameter,
+    /// otherwise allocate a new MMIO slot for it.
     pub fn register_mmio_serial(
         &mut self,
         vm: &VmFd,
         serial: Arc<Mutex<devices::legacy::Serial>>,
+        dev_info_opt: Option<MMIODeviceInfo>,
     ) -> Result<()> {
-        let slot = self.allocate_new_slot(1)?;
+        let slot = dev_info_opt.unwrap_or(self.allocate_new_slot(1)?);
+
         vm.register_irqfd(
             &serial.lock().expect("Poisoned lock").interrupt_evt(),
             slot.irqs[0],
@@ -287,17 +281,25 @@ impl MMIODeviceManager {
     }
 
     #[cfg(target_arch = "aarch64")]
-    /// Create and register a new MMIO RTC device.
-    pub fn register_new_mmio_rtc(&mut self, vm: &VmFd) -> Result<()> {
+    /// Create and register a MMIO RTC device at the specified MMIO address if given as parameter,
+    /// otherwise allocate a new MMIO slot for it.
+    pub fn register_mmio_rtc(
+        &mut self,
+        vm: &VmFd,
+        rtc: Arc<Mutex<devices::legacy::RTC>>,
+        dev_info_opt: Option<MMIODeviceInfo>,
+    ) -> Result<()> {
         // Create and attach a new RTC device.
-        let slot = self.allocate_new_slot(1)?;
-        let rtc_evt = EventFd::new(libc::EFD_NONBLOCK).map_err(Error::EventFd)?;
-        let device = devices::legacy::RTC::new(rtc_evt.try_clone().map_err(Error::EventFd)?);
-        vm.register_irqfd(&rtc_evt, slot.irqs[0])
-            .map_err(Error::RegisterIrqFd)?;
+        let slot = dev_info_opt.unwrap_or(self.allocate_new_slot(1)?);
+
+        vm.register_irqfd(
+            &rtc.lock().expect("Poisoned lock").interrupt_evt(),
+            slot.irqs[0],
+        )
+        .map_err(Error::RegisterIrqFd)?;
 
         let identifier = (DeviceType::RTC, DeviceType::RTC.to_string());
-        self.register_mmio_device(identifier, slot, Arc::new(Mutex::new(device)))
+        self.register_mmio_device(identifier, slot, rtc)
     }
 
     /// Register a boot timer device.
@@ -314,7 +316,6 @@ impl MMIODeviceManager {
         &self.id_to_dev_info
     }
 
-    #[cfg(target_arch = "x86_64")]
     /// Gets the number of interrupts used by the devices registered.
     pub fn used_irqs_count(&self) -> usize {
         let mut irq_number = 0;
@@ -769,7 +770,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(target_arch = "x86_64")]
     fn test_slot_sanity_checks() {
         let mmio_base = 0xd000_0000;
         let device_manager = MMIODeviceManager::new(mmio_base, (arch::IRQ_BASE, arch::IRQ_MAX));

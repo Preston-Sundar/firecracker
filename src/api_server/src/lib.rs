@@ -5,7 +5,7 @@ mod request;
 
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::sync::{mpsc, Arc, Mutex};
 use std::{fmt, io};
 
 use crate::parsed_request::ParsedRequest;
@@ -22,7 +22,6 @@ use seccomp::{BpfProgram, SeccompFilter};
 use utils::eventfd::EventFd;
 use vmm::rpc_interface::{VmmAction, VmmActionError, VmmData};
 use vmm::vmm_config::instance_info::InstanceInfo;
-#[cfg(target_arch = "x86_64")]
 use vmm::vmm_config::snapshot::SnapshotType;
 
 use vmm::FC_EXIT_CODE_BAD_CONFIGURATION;
@@ -60,8 +59,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub struct ApiServer {
     /// MMDS info directly accessible from the API thread.
     mmds_info: Arc<Mutex<Mmds>>,
-    /// VMM instance info directly accessible from the API thread.
-    vmm_shared_info: Arc<RwLock<InstanceInfo>>,
+    /// Firecracker instance info exposed through API.
+    instance_info: InstanceInfo,
     /// Sender which allows passing messages to the VMM.
     api_request_sender: mpsc::Sender<ApiRequest>,
     /// Receiver which collects messages from the VMM.
@@ -77,14 +76,14 @@ pub struct ApiServer {
 impl ApiServer {
     pub fn new(
         mmds_info: Arc<Mutex<Mmds>>,
-        vmm_shared_info: Arc<RwLock<InstanceInfo>>,
+        instance_info: InstanceInfo,
         api_request_sender: mpsc::Sender<ApiRequest>,
         vmm_response_receiver: mpsc::Receiver<ApiResponse>,
         to_vmm_fd: EventFd,
     ) -> Result<Self> {
         Ok(ApiServer {
             mmds_info,
-            vmm_shared_info,
+            instance_info,
             api_request_sender,
             vmm_response_receiver,
             to_vmm_fd,
@@ -202,7 +201,6 @@ impl ApiServer {
         request_processing_start_us: u64,
     ) -> Response {
         let metric_with_action = match *vmm_action {
-            #[cfg(target_arch = "x86_64")]
             VmmAction::CreateSnapshot(ref params) => match params.snapshot_type {
                 SnapshotType::Full => Some((
                     &METRICS.latencies_us.full_create_snapshot,
@@ -213,7 +211,6 @@ impl ApiServer {
                     "create diff snapshot",
                 )),
             },
-            #[cfg(target_arch = "x86_64")]
             VmmAction::LoadSnapshot(_) => {
                 Some((&METRICS.latencies_us.load_snapshot, "load snapshot"))
             }
@@ -222,6 +219,12 @@ impl ApiServer {
             _ => None,
         };
 
+        let vmm_new_state = match *vmm_action {
+            VmmAction::StartMicroVm => "Running".to_string(),
+            VmmAction::Pause => "Paused".to_string(),
+            VmmAction::Resume => "Running".to_string(),
+            _ => self.instance_info.state.clone(),
+        };
         self.api_request_sender
             .send(vmm_action)
             .expect("Failed to send VMM message");
@@ -232,6 +235,7 @@ impl ApiServer {
         let response = ParsedRequest::convert_to_response(&vmm_outcome);
 
         if vmm_outcome.is_ok() {
+            self.instance_info.state = vmm_new_state;
             if let Some((metric, action)) = metric_with_action {
                 let elapsed_time_us =
                     update_metric_with_elapsed_time(metric, request_processing_start_us);
@@ -250,11 +254,9 @@ impl ApiServer {
     }
 
     fn get_instance_info(&self) -> Response {
-        let shared_info_lock = self.vmm_shared_info.clone();
-        // expect() to crash if the other thread poisoned this lock
-        let shared_info = shared_info_lock.read().expect("Poisoned lock");
+        let shared_info = self.instance_info.clone();
         // Serialize it to a JSON string.
-        let body_result = serde_json::to_string(&(*shared_info));
+        let body_result = serde_json::to_string(&shared_info);
         match body_result {
             Ok(body) => ApiServer::json_response(StatusCode::OK, body),
             Err(e) => {
@@ -342,7 +344,6 @@ mod tests {
     use vmm::builder::StartMicrovmError;
     use vmm::rpc_interface::VmmActionError;
     use vmm::vmm_config::instance_info::InstanceInfo;
-    #[cfg(target_arch = "x86_64")]
     use vmm::vmm_config::snapshot::CreateSnapshotParams;
 
     #[test]
@@ -375,12 +376,12 @@ mod tests {
 
     #[test]
     fn test_serve_vmm_action_request() {
-        let vmm_shared_info = Arc::new(RwLock::new(InstanceInfo {
-            started: false,
+        let instance_info = InstanceInfo {
+            state: "Not started".to_string(),
             id: "test_serve_action_req".to_string(),
             vmm_version: "version 0.1.0".to_string(),
             app_name: "app name".to_string(),
-        }));
+        };
 
         let to_vmm_fd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let (api_request_sender, _from_api) = channel();
@@ -389,7 +390,7 @@ mod tests {
 
         let mut api_server = ApiServer::new(
             mmds_info,
-            vmm_shared_info,
+            instance_info,
             api_request_sender,
             vmm_response_receiver,
             to_vmm_fd,
@@ -412,50 +413,46 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NoContent);
         assert_ne!(METRICS.latencies_us.pause_vm.fetch(), 0);
 
-        #[cfg(target_arch = "x86_64")]
-        {
-            assert_eq!(METRICS.latencies_us.diff_create_snapshot.fetch(), 0);
-            to_api
-                .send(Box::new(Err(VmmActionError::OperationNotSupportedPreBoot)))
-                .unwrap();
-            let response = api_server.serve_vmm_action_request(
-                Box::new(VmmAction::CreateSnapshot(CreateSnapshotParams {
-                    snapshot_type: SnapshotType::Diff,
-                    snapshot_path: PathBuf::new(),
-                    mem_file_path: PathBuf::new(),
-                    version: None,
-                })),
-                start_time_us,
-            );
-            assert_eq!(response.status(), StatusCode::BadRequest);
-            // The metric should not be updated if the request wasn't successful.
-            assert_eq!(METRICS.latencies_us.diff_create_snapshot.fetch(), 0);
+        assert_eq!(METRICS.latencies_us.diff_create_snapshot.fetch(), 0);
+        to_api
+            .send(Box::new(Err(VmmActionError::OperationNotSupportedPreBoot)))
+            .unwrap();
+        let response = api_server.serve_vmm_action_request(
+            Box::new(VmmAction::CreateSnapshot(CreateSnapshotParams {
+                snapshot_type: SnapshotType::Diff,
+                snapshot_path: PathBuf::new(),
+                mem_file_path: PathBuf::new(),
+                version: None,
+            })),
+            start_time_us,
+        );
+        assert_eq!(response.status(), StatusCode::BadRequest);
+        // The metric should not be updated if the request wasn't successful.
+        assert_eq!(METRICS.latencies_us.diff_create_snapshot.fetch(), 0);
 
-            to_api.send(Box::new(Ok(VmmData::Empty))).unwrap();
-            let response = api_server.serve_vmm_action_request(
-                Box::new(VmmAction::CreateSnapshot(CreateSnapshotParams {
-                    snapshot_type: SnapshotType::Diff,
-                    snapshot_path: PathBuf::new(),
-                    mem_file_path: PathBuf::new(),
-                    version: None,
-                })),
-                start_time_us,
-            );
-            assert_eq!(response.status(), StatusCode::NoContent);
-            assert_ne!(METRICS.latencies_us.diff_create_snapshot.fetch(), 0);
-            assert_eq!(METRICS.latencies_us.full_create_snapshot.fetch(), 0);
-        }
+        to_api.send(Box::new(Ok(VmmData::Empty))).unwrap();
+        let response = api_server.serve_vmm_action_request(
+            Box::new(VmmAction::CreateSnapshot(CreateSnapshotParams {
+                snapshot_type: SnapshotType::Diff,
+                snapshot_path: PathBuf::new(),
+                mem_file_path: PathBuf::new(),
+                version: None,
+            })),
+            start_time_us,
+        );
+        assert_eq!(response.status(), StatusCode::NoContent);
+        assert_ne!(METRICS.latencies_us.diff_create_snapshot.fetch(), 0);
+        assert_eq!(METRICS.latencies_us.full_create_snapshot.fetch(), 0);
     }
 
     #[test]
     fn test_get_instance_info() {
-        let vmm_shared_info = Arc::new(RwLock::new(InstanceInfo {
-            started: false,
+        let instance_info = InstanceInfo {
+            state: "Not started".to_string(),
             id: "test_get_instance_info".to_string(),
             vmm_version: "version 0.1.0".to_string(),
             app_name: "app name".to_string(),
-        }));
-
+        };
         let to_vmm_fd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let (api_request_sender, _from_api) = channel();
         let (_to_api, vmm_response_receiver) = channel();
@@ -463,7 +460,7 @@ mod tests {
 
         let api_server = ApiServer::new(
             mmds_info,
-            vmm_shared_info,
+            instance_info,
             api_request_sender,
             vmm_response_receiver,
             to_vmm_fd,
@@ -476,12 +473,12 @@ mod tests {
 
     #[test]
     fn test_get_mmds() {
-        let vmm_shared_info = Arc::new(RwLock::new(InstanceInfo {
-            started: false,
+        let instance_info = InstanceInfo {
+            state: "Not started".to_string(),
             id: "test_get_mmds".to_string(),
             vmm_version: "version 0.1.0".to_string(),
             app_name: "app name".to_string(),
-        }));
+        };
 
         let to_vmm_fd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let (api_request_sender, _from_api) = channel();
@@ -490,7 +487,7 @@ mod tests {
 
         let api_server = ApiServer::new(
             mmds_info,
-            vmm_shared_info,
+            instance_info,
             api_request_sender,
             vmm_response_receiver,
             to_vmm_fd,
@@ -503,12 +500,12 @@ mod tests {
 
     #[test]
     fn test_put_mmds() {
-        let vmm_shared_info = Arc::new(RwLock::new(InstanceInfo {
-            started: false,
+        let instance_info = InstanceInfo {
+            state: "Not started".to_string(),
             id: "test_put_mmds".to_string(),
             vmm_version: "version 0.1.0".to_string(),
             app_name: "app name".to_string(),
-        }));
+        };
 
         let to_vmm_fd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let (api_request_sender, _from_api) = channel();
@@ -517,7 +514,7 @@ mod tests {
 
         let api_server = ApiServer::new(
             mmds_info,
-            vmm_shared_info,
+            instance_info,
             api_request_sender,
             vmm_response_receiver,
             to_vmm_fd,
@@ -530,12 +527,12 @@ mod tests {
 
     #[test]
     fn test_patch_mmds() {
-        let vmm_shared_info = Arc::new(RwLock::new(InstanceInfo {
-            started: false,
+        let instance_info = InstanceInfo {
+            state: "Not started".to_string(),
             id: "test_patch_mmds".to_string(),
             vmm_version: "version 0.1.0".to_string(),
             app_name: "app name".to_string(),
-        }));
+        };
 
         let to_vmm_fd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let (api_request_sender, _from_api) = channel();
@@ -544,7 +541,7 @@ mod tests {
 
         let api_server = ApiServer::new(
             mmds_info,
-            vmm_shared_info,
+            instance_info,
             api_request_sender,
             vmm_response_receiver,
             to_vmm_fd,
@@ -566,12 +563,12 @@ mod tests {
 
     #[test]
     fn test_handle_request() {
-        let vmm_shared_info = Arc::new(RwLock::new(InstanceInfo {
-            started: false,
+        let instance_info = InstanceInfo {
+            state: "Not started".to_string(),
             id: "test_handle_request".to_string(),
             vmm_version: "version 0.1.0".to_string(),
             app_name: "app name".to_string(),
-        }));
+        };
 
         let to_vmm_fd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let (api_request_sender, _from_api) = channel();
@@ -580,7 +577,7 @@ mod tests {
 
         let mut api_server = ApiServer::new(
             mmds_info,
-            vmm_shared_info,
+            instance_info,
             api_request_sender,
             vmm_response_receiver,
             to_vmm_fd,
@@ -671,12 +668,12 @@ mod tests {
         let path_to_socket = tmp_socket.as_path().to_str().unwrap().to_owned();
         let api_thread_path_to_socket = path_to_socket.clone();
 
-        let vmm_shared_info = Arc::new(RwLock::new(InstanceInfo {
-            started: false,
+        let instance_info = InstanceInfo {
+            state: "Not started".to_string(),
             id: "test_handle_request".to_string(),
             vmm_version: "version 0.1.0".to_string(),
             app_name: "app name".to_string(),
-        }));
+        };
 
         let to_vmm_fd = EventFd::new(libc::EFD_NONBLOCK).unwrap();
         let (api_request_sender, _from_api) = channel();
@@ -688,7 +685,7 @@ mod tests {
             .spawn(move || {
                 ApiServer::new(
                     mmds_info,
-                    vmm_shared_info,
+                    instance_info,
                     api_request_sender,
                     vmm_response_receiver,
                     to_vmm_fd,

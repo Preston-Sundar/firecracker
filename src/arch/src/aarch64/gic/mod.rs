@@ -1,20 +1,28 @@
 // Copyright 2019 Amazon.com, Inc. or its affiliates. All Rights Reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+mod dist_regs;
+mod gicv2;
+mod gicv3;
+mod icc_regs;
+mod redist_regs;
+
 use std::{boxed::Box, result};
 
 use kvm_ioctls::{DeviceFd, VmFd};
 
-use super::gicv2::GICv2;
-use super::gicv3::GICv3;
+pub use self::dist_regs::{get_dist_regs, set_dist_regs};
+pub use self::icc_regs::{get_icc_regs, set_icc_regs};
+pub use self::redist_regs::{get_redist_regs, set_redist_regs};
+use {super::layout, gicv2::GICv2, gicv3::GICv3};
 
 /// Errors thrown while setting up the GIC.
 #[derive(Debug)]
 pub enum Error {
     /// Error while calling KVM ioctl for setting up the global interrupt controller.
     CreateGIC(kvm_ioctls::Error),
-    /// Error while setting device attributes for the GIC.
-    SetDeviceAttribute(kvm_ioctls::Error),
+    /// Error while setting or getting device attributes for the GIC.
+    DeviceAttribute(kvm_ioctls::Error, bool, u32),
 }
 type Result<T> = result::Result<T, Error>;
 
@@ -82,7 +90,7 @@ pub trait GICDevice {
             flags,
         };
         fd.set_device_attr(&attr)
-            .map_err(Error::SetDeviceAttribute)?;
+            .map_err(|e| Error::DeviceAttribute(e, true, group))?;
 
         Ok(())
     }
@@ -147,6 +155,21 @@ pub fn create_gic(vm: &VmFd, vcpu_count: u64) -> Result<Box<dyn GICDevice>> {
     GICv3::new(vm, vcpu_count).or_else(|_| GICv2::new(vm, vcpu_count))
 }
 
+/// Function that flushes
+/// RDIST pending tables into guest RAM.
+///
+/// The tables get flushed to guest RAM whenever the VM gets stopped.
+pub fn save_pending_tables(fd: &DeviceFd) -> Result<()> {
+    let init_gic_attr = kvm_bindings::kvm_device_attr {
+        group: kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL,
+        attr: u64::from(kvm_bindings::KVM_DEV_ARM_VGIC_SAVE_PENDING_TABLES),
+        addr: 0,
+        flags: 0,
+    };
+    fd.set_device_attr(&init_gic_attr)
+        .map_err(|e| Error::DeviceAttribute(e, true, kvm_bindings::KVM_DEV_ARM_VGIC_GRP_CTRL))
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -158,5 +181,24 @@ mod tests {
         let kvm = Kvm::new().unwrap();
         let vm = kvm.create_vm().unwrap();
         assert!(create_gic(&vm, 1).is_ok());
+    }
+
+    #[test]
+    fn test_save_pending_tables() {
+        use std::os::unix::io::AsRawFd;
+
+        let kvm = Kvm::new().unwrap();
+        let vm = kvm.create_vm().unwrap();
+        let gic = create_gic(&vm, 1).expect("Cannot create gic");
+        assert!(save_pending_tables(&gic.device_fd()).is_ok());
+
+        unsafe { libc::close(gic.device_fd().as_raw_fd()) };
+
+        let res = save_pending_tables(&gic.device_fd());
+        assert!(res.is_err());
+        assert_eq!(
+            format!("{:?}", res.unwrap_err()),
+            "DeviceAttribute(Error(9), true, 4)"
+        );
     }
 }
